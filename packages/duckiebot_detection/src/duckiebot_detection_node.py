@@ -43,7 +43,6 @@ class DuckiebotDetectionNode(DTROS):
         self.blobdetector_min_area = 10
         self.blobdetector_min_dist_between_blobs = 2
 
-
         self.cbParametersChanged() 
 
         self.bridge = CvBridge()
@@ -122,6 +121,7 @@ class DuckiebotDetectionNode(DTROS):
         self.pub_detection.publish(detection_flag_msg_out)
         if self.pub_circlepattern_image.get_num_connections() > 0:
             cv2.drawChessboardCorners(image_cv, tuple(self.circlepattern_dims), centers, detection)
+            ### imwrite the sample detections
             image_msg_out = self.bridge.cv2_to_compressed_imgmsg(image_cv)
             self.pub_circlepattern_image.publish(image_msg_out)
 
