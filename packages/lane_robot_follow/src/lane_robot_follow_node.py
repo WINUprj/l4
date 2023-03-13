@@ -2,8 +2,9 @@
 import rospy
 
 from duckietown.dtros import DTROS, NodeType
+from duckietown_msg.srv import SetCustomLEDPattern
 from std_msgs.msg import String, Float32
-from duckietown_msgs.msg import BoolStamped, VehicleCorners
+from duckietown_msgs.msg import BoolStamped, VehicleCorners, LEDPattern
 from sensor_msgs.msg import CompressedImage
 from turbojpeg import TurboJPEG
 import cv2
@@ -26,6 +27,10 @@ class LaneAndRobotFollowNode(DTROS):
         self.veh = rospy.get_param("~veh")
         
         self.cur_dist_to_leader = 1.5
+
+        ### Services
+        rospy.wait_for_service('/' + self.veh + '/led_emitter_node/set_custom_pattern')
+        self.service = rospy.ServiceProxy('/' + self.veh + '/led_emitter_node/set_custom_pattern', SetCustomLEDPattern)
 
         ### Subscribers
         # Camera images
@@ -164,6 +169,16 @@ class LaneAndRobotFollowNode(DTROS):
                 pass
         
         return x, y
+    
+    '''
+    Turn indicator by setting the LED pattern
+    1: rear left
+    3: rear right
+    '''
+    def turn_indicator(self, direction):
+        indicator = LEDPattern()
+        indicator.color_list = [direction] * 5
+
 
     def callback(self, msg):
         img = self.jpeg.decode(msg.data)
