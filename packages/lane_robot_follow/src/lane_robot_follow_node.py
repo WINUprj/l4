@@ -172,8 +172,8 @@ class LaneAndRobotFollowNode(DTROS):
     
     '''
     Turn indicator by setting the LED pattern
-    1: rear left
     3: rear right
+    4: rear left
     '''
     def turn_indicator(self, direction):
         indicator = LEDPattern()
