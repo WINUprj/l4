@@ -12,7 +12,7 @@ from duckietown_msgs.msg import Twist2DStamped
 
 ROAD_MASK = [(20, 60, 0), (50, 255, 255)]
 # Mask resource: https://cvexplained.wordpress.com/2020/04/28/color-detection-hsv/#:~:text=The%20HSV%20values%20for%20true,10%20and%20160%20to%20180.
-STOP_MASK = [[(0, 100, 20), (10, 255, 255)], [(160, 100, 20), (179, 255, 255)]]
+STOP_MASK = [(0, 100, 20), (10, 255, 255)]
 DEBUG = False
 ENGLISH = False
 
@@ -81,7 +81,7 @@ class LaneAndRobotFollowNode(DTROS):
 
         # Image related parameters
         self.width = None
-        self.lower_thresh = 400
+        self.lower_thresh = 150
 
         # PID Variables
         self.proportional = None
@@ -119,7 +119,7 @@ class LaneAndRobotFollowNode(DTROS):
 
         # Timer for turning/going straight at the intersection
         self.turning = False 
-        self.t_turn = 1
+        self.t_turn = 2
         self.t_turn_start = 0
 
         # Shutdown hook
@@ -153,7 +153,7 @@ class LaneAndRobotFollowNode(DTROS):
 
         return max_area, max_idx
 
-    def get_contour_center(contours, idx):
+    def get_contour_center(self, contours, idx):
         x, y = -1, -1
         if idx != -1:
             M = cv2.moments(contours[idx])
@@ -172,21 +172,22 @@ class LaneAndRobotFollowNode(DTROS):
             self.width = img.shape[1]
         
         # Check for the red line for all the incoming images
-        red_crop = img[300:-1, 100:-100, :]
+        red_crop = img[300:-1, 200:-200, :]
         red_crop_hsv = cv2.cvtColor(red_crop, cv2.COLOR_BGR2HSV)
-        lower_mask = cv2.inRange(red_crop_hsv, STOP_MASK[0][0], STOP_MASK[0][1])
-        upper_mask = cv2.inRange(red_crop_hsv, STOP_MASK[1][0], STOP_MASK[1][1])
-        full_mask = lower_mask + upper_mask
+        msk = cv2.inRange(red_crop_hsv, STOP_MASK[0], STOP_MASK[1])
         
         # Get contour and check if contour is "close enough" to car itself
-        red_contours, _ = cv2.findContours(mask,
+        red_contours, _ = cv2.findContours(msk,
                                            cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_NONE)
+
         _, mx_idx = self.get_max_contour(red_contours)
         rx, ry = self.get_contour_center(red_contours, mx_idx)
+        # print(rx, ry)
         if not self.is_stop and not self.turning and \
            mx_idx != -1 and rx != -1 and ry != -1 and \
            ry >= self.lower_thresh:
+            print("Stopping!")
             # Indicate the stop when car is DRIVING (i.e. not at the stop state
             # or passing through the intersections).
             self.is_stop = True
@@ -205,7 +206,7 @@ class LaneAndRobotFollowNode(DTROS):
 
             # Search for lane in front
             _, max_idx = self.get_max_contour(contours)
-            cx, cy = self.get_contourr_center(contours, max_idx)
+            cx, cy = self.get_contour_center(contours, max_idx)
             
             if max_idx == -1:
                 self.proportional = None
@@ -233,11 +234,11 @@ class LaneAndRobotFollowNode(DTROS):
     def turn(self, right=True):
         """Turn the car at the intersection."""
         if right:
-            self.twist.v = self.velocity
+            self.twist.v = self.velocity + 0.5
             self.twist.omega = -3.3
         else:
-            self.twist.v = self.velocity 
-            self.twist.omega = 2.2
+            self.twist.v = self.velocity
+            self.twist.omega = 3.5
     
     def drive(self):
         ### Handle all the variables/flags which are independent of incoming messages 
@@ -278,12 +279,15 @@ class LaneAndRobotFollowNode(DTROS):
             self.stop()
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
             if self.in_front:
+                print("Straight")
                 # If one detect leader robot in front, go straight
                 self.straight()
             elif not self.in_front:
-                if self.center_x > self.width / 2 and (self.at_id in self.t_intersection_right + self.stop_sign_ids):
+                if self.center_x > self.width / 2 or (self.at_id in self.t_intersection_right + self.stop_sign_ids):
+                    print("Turn right")
                     self.turn(True)
                 else:
+                    print("Turn left")
                     self.turn(False)
             
         # Publish the resultant control values
