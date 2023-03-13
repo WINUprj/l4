@@ -3,7 +3,7 @@ import yaml
 
 import rospy
 from duckietown.dtros import DTROS, NodeType
-from std_msgs.msg import Integer 
+from std_msgs.msg import Int32 
 from sensor_msgs.msg import CompressedImage
 
 import numpy as np
@@ -71,8 +71,8 @@ class AprilTagDetectionNode(DTROS):
 
         # Publishers
         self.pub_info = rospy.Publisher(
-            f"/{self._veh}/{node_name}/area",
-            String,
+            f"/{self._veh}/{node_name}/id",
+            Int32,
             queue_size=1
         )
 
@@ -123,8 +123,8 @@ class AprilTagDetectionNode(DTROS):
                         mx_tag_id = tag.tag_id
 
             # Publish maximum area and tag ids
-            msg = Integer()
-            msg.data = f"{mx_area},{mx_tag_id}"
+            msg = Int32()
+            msg.data = mx_tag_id
             self.pub_info.publish(msg)
 
             self.cnt = 0

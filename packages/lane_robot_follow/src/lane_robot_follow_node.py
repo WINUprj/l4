@@ -2,7 +2,7 @@
 import rospy
 
 from duckietown.dtros import DTROS, NodeType
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String, Float32, Int32
 from duckietown_msgs.msg import BoolStamped, VehicleCorners
 from sensor_msgs.msg import CompressedImage
 from turbojpeg import TurboJPEG
@@ -56,9 +56,9 @@ class LaneAndRobotFollowNode(DTROS):
         )
         # Apriltag information
         self.sub_detect = rospy.Subscriber(
-            f"/{self.veh}/apriltag_detection/area",
-            String,
-            self.cb_apriltag_area
+            f"/{self.veh}/apriltag_detection/id",
+            Int32,
+            self.cb_apriltag_id
         )
 
         ### Publishers
@@ -139,7 +139,7 @@ class LaneAndRobotFollowNode(DTROS):
     def cb_detect(self, msg):
         self.in_front = msg.data
 
-    def cb_apriltag_area(self, msg):
+    def cb_apriltag_id(self, msg):
         self.at_id = msg.data
     
     def get_max_contour(self, contours):
