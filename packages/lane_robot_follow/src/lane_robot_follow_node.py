@@ -218,7 +218,7 @@ class LaneAndRobotFollowNode(DTROS):
         
         else:
             # Follow the robot in front
-            self.proportional = self.center_x - int(img.shape[1] / 2)
+            self.proportional = self.center_x - int(self.width / 2)
 
     def stop(self):
         """Stop the vehicle completely."""
@@ -277,15 +277,14 @@ class LaneAndRobotFollowNode(DTROS):
             # Track the center of leader robot to decide the direction to turn
             self.stop()
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            if self.in_front or self.center_x == -1:
-                # If one detect leader robot in front, or never detected the robot,
-                # circle around the Duckietown
+            if self.in_front:
+                # If one detect leader robot in front, go straight
                 self.straight()
             elif not self.in_front:
-                if self.center_x < self.width // 2 or self.at_id in self.t_intersection_left:
-                    self.turn(False)
-                else:
+                if self.center_x > self.width / 2 and (self.at_id in self.t_intersection_right + self.stop_sign_ids):
                     self.turn(True)
+                else:
+                    self.turn(False)
             
         # Publish the resultant control values
         self.vel_pub.publish(self.twist)
