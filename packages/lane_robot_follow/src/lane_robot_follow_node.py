@@ -25,7 +25,8 @@ class LaneAndRobotFollowNode(DTROS):
         
         self.cur_dist_to_leader = 1.5
 
-        # Subscribers
+        ### Subscribers
+        # Camera images
         self.sub = rospy.Subscriber(
             "/" + self.veh + "/camera_node/image/compressed",
             CompressedImage,
@@ -33,28 +34,39 @@ class LaneAndRobotFollowNode(DTROS):
             queue_size=1,
             buff_size="20MB"
         )
+        # Leader duckiebot distance
         self.sub_distance = rospy.Subscriber(
             f"/{self.veh}/duckiebot_distance_node/distance",
             Float32,
             self.cb_distance
         )
+        # Leader duckiebot centers
         self.sub_centers = rospy.Subscriber(
             f"/{self.veh}/duckiebot_detection_node/centers",
             VehicleCorners,
             self.cb_corners
         )
+        # Leader duckiebot detection results
         self.sub_detect = rospy.Subscriber(
             f"/{self.veh}/duckiebot_detection_node/detection",
             BoolStamped,
             self.cb_detect
         )
+        # Apriltag information
+        self.sub_detect = rospy.Subscriber(
+            f"/{self.veh}/apriltag_detection/area",
+            String,
+            self.cb_apriltag_area
+        )
 
-        # Publishers
+        ### Publishers
+        # Publish mask image for debug
         self.pub = rospy.Publisher(
             "/" + self.veh + "/output/image/mask/compressed",
             CompressedImage,
             queue_size=1
         )
+        # Publish car command to control robot
         self.vel_pub = rospy.Publisher(
             "/" + self.veh + "/car_cmd_switch_node/cmd",
             Twist2DStamped,
@@ -83,13 +95,27 @@ class LaneAndRobotFollowNode(DTROS):
         # Thresholds
         self.dist_thresh = 0.45
         self.eps = 0.003
-        self.area_thresh = 10000        # TODO: Need adjustment on this
+        self.area_thresh = 10000        # TODO: Might need adjustment on this
         
         # Variables to track on
-        self.in_front = False
+        self.in_front = False       # indicates whether leader bot is in front
+        self.is_stop = False
         self.center = [-1, -1, -1]
-        self.right_turn = False
-        self.left_turn = False
+
+        # Apriltag-related data
+        self.t_intersection_ids = [153, 58, 133, 62]
+        self.stop_sign_ids = [162, 169]
+        self.at_area = 0
+        self.at_id = 0
+
+        # Timer for stopping at the intersection
+        self.t_stop = 5     # stop for this amount of seconds at intersections
+        self.t_start = 0
+
+        # Timer for turning/going straight at the intersection
+        self.turning = False 
+        self.t_turn = 2
+        self.t_turn_start = 0
 
         # Shutdown hook
         rospy.on_shutdown(self.hook)
@@ -99,17 +125,30 @@ class LaneAndRobotFollowNode(DTROS):
         print(self.cur_dist_to_leader)
 
     def cb_corners(self, msg):
-        # print("Length of corners list", len(msg.corners))
+        print("Length of corners list", len(msg.corners))
         # self.center = [msg.corners.x,
         #                msg.corners.y,
         #                msg.corners.z]
-        pass
 
     def cb_detect(self, msg):
         self.in_front = msg.data
 
+    def cb_apriltag_area(self, msg):
+        self.at_area, self.at_id = map(int, msg.data.split(','))
+        if not self.is_stop and self.at_area > self.area_thresh and (self.at_id in self.t_intersection_ids or self.at_id in self.stop_sign_ids) and not self.turning:
+            self.is_stop = True
+            self.t_start = rospy.get_rostime().secs
+
     def callback(self, msg):
+        ### States:
+        # Drive --> Stop at the intersection --> 
+        # Lights the appropriate LED --> move right/left for a bit
+        # ---> Drive (repeat)
+        # Drive: consists of two possible states
+        #   1. Follow the robot 
+        #   2. Follow the lane
         if not self.in_front:
+            # If bot is not in front, do lane following
             img = self.jpeg.decode(msg.data)
             crop = img[300:-1, :, :]
             crop_width = crop.shape[1]
@@ -156,6 +195,11 @@ class LaneAndRobotFollowNode(DTROS):
         self.twist.v = 0
         self.twist.omega = 0
     
+    def straight(self):
+        """Move vehicle in forward direction."""
+        self.twist.v = self.velocity
+        self.twist.omega = 0
+
     def turn(self, right=True):
         """Turn the car at the intersection."""
         if right:
@@ -164,8 +208,18 @@ class LaneAndRobotFollowNode(DTROS):
         else:
             self.twist.v = self.velocity 
             self.twist.omega = 2.2
-
+    
     def drive(self):
+        ### Handle all the variables/flags which are independent of incoming messages 
+        if self.is_stop and rospy.get_rostime().secs - self.t_start >= self.t_stop:
+            # Move a bit when waiting duration is over
+            self.is_stop = False
+            self.turning = True
+            self.t_turn_start = rospy.get_rostime().secs
+        elif self.turning and rospy.get_rostime().secs - self.t_turn_start >= self.t_turn:
+            # Switch from manual control to PID control
+            self.turning = False
+
         if self.proportional is None:
             self.twist.omega = 0
         else:
@@ -183,11 +237,12 @@ class LaneAndRobotFollowNode(DTROS):
 
             if DEBUG:
                 self.loginfo(self.proportional, P, D, self.twist.omega, self.twist.v)
-
-        if self.cur_dist_to_leader < self.dist_thresh + self.eps and self.in_front:
-            # Stop when distance to the bot in front lower the distance threshold
-            self.twist.v = 0
-            self.twist.omega = 0
+        
+        # Handle special cases
+        if (self.in_front and self.cur_dist_to_leader < self.dist_thresh + self.eps) or (self.is_stop and (rospy.get_rostime().secs - self.t_start < self.t_stop)):
+            self.stop()
+        elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
+            self.straight()     # TODO: Allow either turn or straight based on the situation
 
         self.vel_pub.publish(self.twist)
 
