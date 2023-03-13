@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import rospy
 
 from duckietown.dtros import DTROS, NodeType
@@ -17,21 +16,23 @@ ENGLISH = False
 
 class LaneAndRobotFollowNode(DTROS):
     def __init__(self, node_name):
-        super(LaneAndRobotFollowNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
+        super(LaneAndRobotFollowNode, self).__init__(
+            node_name=node_name,
+            node_type=NodeType.GENERIC
+        )
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
         
         self.cur_dist_to_leader = 1.5
 
-        # Publishers & Subscribers
-        self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
-                                   CompressedImage,
-                                   queue_size=1)
-        self.sub = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed",
-                                    CompressedImage,
-                                    self.callback,
-                                    queue_size=1,
-                                    buff_size="20MB")
+        # Subscribers
+        self.sub = rospy.Subscriber(
+            "/" + self.veh + "/camera_node/image/compressed",
+            CompressedImage,
+            self.callback,
+            queue_size=1,
+            buff_size="20MB"
+        )
         self.sub_distance = rospy.Subscriber(
             f"/{self.veh}/duckiebot_distance_node/distance",
             Float32,
@@ -47,9 +48,18 @@ class LaneAndRobotFollowNode(DTROS):
             BoolStamped,
             self.cb_detect
         )
-        self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd",
-                                       Twist2DStamped,
-                                       queue_size=1)
+
+        # Publishers
+        self.pub = rospy.Publisher(
+            "/" + self.veh + "/output/image/mask/compressed",
+            CompressedImage,
+            queue_size=1
+        )
+        self.vel_pub = rospy.Publisher(
+            "/" + self.veh + "/car_cmd_switch_node/cmd",
+            Twist2DStamped,
+            queue_size=1
+        )
 
         self.jpeg = TurboJPEG()
 
@@ -64,14 +74,18 @@ class LaneAndRobotFollowNode(DTROS):
         self.velocity = 0.35
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
 
+        # PID related terms
         self.P = 0.037
         self.D = -0.004
         self.last_error = 0
         self.last_time = rospy.get_time()
 
-        # Original variables
+        # Thresholds
         self.dist_thresh = 0.45
         self.eps = 0.003
+        self.area_thresh = 10000        # TODO: Need adjustment on this
+        
+        # Variables to track on
         self.in_front = False
         self.center = [-1, -1, -1]
         self.right_turn = False
@@ -137,6 +151,20 @@ class LaneAndRobotFollowNode(DTROS):
             # Follow the robot in front
             self.proportional = self.center[0] - int(crop_width / 2)
 
+    def stop(self):
+        """Stop the vehicle completely."""
+        self.twist.v = 0
+        self.twist.omega = 0
+    
+    def turn(self, right=True):
+        """Turn the car at the intersection."""
+        if right:
+            self.twist.v = self.velocity
+            self.twist.omega = -3.3
+        else:
+            self.twist.v = self.velocity 
+            self.twist.omega = 2.2
+
     def drive(self):
         if self.proportional is None:
             self.twist.omega = 0
@@ -152,8 +180,7 @@ class LaneAndRobotFollowNode(DTROS):
 
             self.twist.v = self.velocity * min(self.cur_dist_to_leader, 1)
             self.twist.omega = P + D
-            # print("Current velocity: ", self.twist.v)
-            # print("Current angular velocity: ", self.twist.omega)
+
             if DEBUG:
                 self.loginfo(self.proportional, P, D, self.twist.omega, self.twist.v)
 
@@ -161,14 +188,6 @@ class LaneAndRobotFollowNode(DTROS):
             # Stop when distance to the bot in front lower the distance threshold
             self.twist.v = 0
             self.twist.omega = 0
-        
-        if self.left_turn:
-            self.twist.v = self.velocity 
-            self.twist.omega = 2.2
-        
-        if self.right_turn:
-            self.twist.v = self.velocity
-            self.twist.omega = -3.3
 
         self.vel_pub.publish(self.twist)
 
