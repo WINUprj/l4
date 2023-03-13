@@ -3,7 +3,7 @@ import yaml
 
 import rospy
 from duckietown.dtros import DTROS, NodeType
-from std_msgs.msg import String 
+from std_msgs.msg import Integer 
 from sensor_msgs.msg import CompressedImage
 
 import numpy as np
@@ -64,7 +64,7 @@ class AprilTagDetectionNode(DTROS):
         
         # Subscriber
         self.sub_cam = rospy.Subscriber(
-            f"/{self._veh}/{node_name}/image/compressed",
+            f"/{self._veh}/camera_node/image/compressed",
             CompressedImage,
             self.cb_cam
         )
@@ -76,6 +76,8 @@ class AprilTagDetectionNode(DTROS):
             queue_size=1
         )
 
+        self.cnt = 0
+
     def undistort(self, img):
         return cv2.undistort(img,
                              self.camera_mat,
@@ -84,47 +86,50 @@ class AprilTagDetectionNode(DTROS):
                              self.camera_mat)
 
     def cb_cam(self, msg):
-        # Reconstruct byte sequence to image
-        img = np.frombuffer(msg.data, np.uint8) 
-        img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-        
-        # Undistort an image
-        img = self.undistort(img)
+        if self.cnt % 7 == 0: 
+            # Reconstruct byte sequence to image
+            img = np.frombuffer(msg.data, np.uint8) 
+            img = cv2.imdecode(img, cv2.IMREAD_COLOR)
+            
+            # Undistort an image
+            img = self.undistort(img)
 
-        # Convert image to grayscale
-        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Detect an apriltag
-        c_params = [self.camera_mat[0,0],
-                    self.camera_mat[1,1],
-                    self.camera_mat[0,2],
-                    self.camera_mat[1,2]]
+            # Convert image to grayscale
+            gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Detect an apriltag
+            c_params = [self.camera_mat[0,0],
+                        self.camera_mat[1,1],
+                        self.camera_mat[0,2],
+                        self.camera_mat[1,2]]
 
-        tags = self.apriltag_detector.detect(gray_img, True, c_params, 0.065)
+            tags = self.apriltag_detector.detect(gray_img, True, c_params, 0.065)
 
-        mx_area = 0
-        mx_tag_id = 0
-        if len(tags) > 0:
-            # Take a tag with maximum area
-            for tag in tags:
-                (ptA, ptB, ptC, _) = tag.corners
+            mx_area = 0
+            mx_tag_id = 0
+            if len(tags) > 0:
+                # Take a tag with maximum area
+                for tag in tags:
+                    (ptA, ptB, ptC, _) = tag.corners
 
-                ptA = (int(ptA[0]), int(ptA[1]))
-                ptB = (int(ptB[0]), int(ptB[1]))
-                ptC = (int(ptC[0]), int(ptC[1]))
+                    ptA = (int(ptA[0]), int(ptA[1]))
+                    ptB = (int(ptB[0]), int(ptB[1]))
+                    ptC = (int(ptC[0]), int(ptC[1]))
 
-                area = int(abs(ptA[0]-ptB[0]) * abs(ptB[1] * ptC[1]))
-                if area > mx_area:
-                    mx_area = area
-                    mx_tag_id = tag.id
+                    area = int(abs(ptA[0] - ptB[0]) * abs(ptB[1] - ptC[1]))
+                    if area > mx_area:
+                        # print(ptA, ptB, ptC)
+                        mx_area = area
+                        mx_tag_id = tag.tag_id
 
-        # Publish maximum area and tag ids
-        msg = String()
-        msg.data = f"{mx_area},{mx_tag_id}"
-        self.pub_info.publish(msg)
+            # Publish maximum area and tag ids
+            msg = Integer()
+            msg.data = f"{mx_area},{mx_tag_id}"
+            self.pub_info.publish(msg)
+
+            self.cnt = 0
+        self.cnt += 1
         
 if __name__ == "__main__":
     apriltag_ar = AprilTagDetectionNode()
-    rate = rospy.Rate(8)
-    while not rospy.is_shutdown():
-        rate.sleep()
+    rospy.spin()

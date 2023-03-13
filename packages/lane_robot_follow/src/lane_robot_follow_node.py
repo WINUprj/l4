@@ -11,6 +11,8 @@ import numpy as np
 from duckietown_msgs.msg import Twist2DStamped
 
 ROAD_MASK = [(20, 60, 0), (50, 255, 255)]
+# Mask resource: https://cvexplained.wordpress.com/2020/04/28/color-detection-hsv/#:~:text=The%20HSV%20values%20for%20true,10%20and%20160%20to%20180.
+STOP_MASK = [[(0, 100, 20), (10, 255, 255)], [(160, 100, 20), (179, 255, 255)]]
 DEBUG = False
 ENGLISH = False
 
@@ -77,6 +79,10 @@ class LaneAndRobotFollowNode(DTROS):
 
         self.loginfo("Initialized")
 
+        # Image related parameters
+        self.width = None
+        self.lower_thresh = 400
+
         # PID Variables
         self.proportional = None
         if ENGLISH:
@@ -95,26 +101,25 @@ class LaneAndRobotFollowNode(DTROS):
         # Thresholds
         self.dist_thresh = 0.45
         self.eps = 0.003
-        self.area_thresh = 10000        # TODO: Might need adjustment on this
         
         # Variables to track on
         self.in_front = False       # indicates whether leader bot is in front
         self.is_stop = False
-        self.center = [-1, -1, -1]
+        self.center_x = -1 
 
         # Apriltag-related data
-        self.t_intersection_ids = [153, 58, 133, 62]
+        self.t_intersection_right = [58, 133]
+        self.t_intersection_left = [153, 62]
         self.stop_sign_ids = [162, 169]
-        self.at_area = 0
-        self.at_id = 0
+        self.at_id = -1
 
         # Timer for stopping at the intersection
-        self.t_stop = 5     # stop for this amount of seconds at intersections
+        self.t_stop = 4     # stop for this amount of seconds at intersections
         self.t_start = 0
 
         # Timer for turning/going straight at the intersection
         self.turning = False 
-        self.t_turn = 2
+        self.t_turn = 1
         self.t_turn_start = 0
 
         # Shutdown hook
@@ -125,33 +130,72 @@ class LaneAndRobotFollowNode(DTROS):
         print(self.cur_dist_to_leader)
 
     def cb_corners(self, msg):
-        print("Length of corners list", len(msg.corners))
-        # self.center = [msg.corners.x,
-        #                msg.corners.y,
-        #                msg.corners.z]
+        if len(msg.corners) > 0:
+            # Get x value where middle of leading bot exists
+            self.center_x = int(
+                np.mean([msg.corners[i].x for i in range(len(msg.corners))])
+            )
 
     def cb_detect(self, msg):
         self.in_front = msg.data
 
     def cb_apriltag_area(self, msg):
-        self.at_area, self.at_id = map(int, msg.data.split(','))
-        if not self.is_stop and self.at_area > self.area_thresh and (self.at_id in self.t_intersection_ids or self.at_id in self.stop_sign_ids) and not self.turning:
+        self.at_id = msg.data
+    
+    def get_max_contour(self, contours):
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        return max_area, max_idx
+
+    def get_contour_center(contours, idx):
+        x, y = -1, -1
+        if idx != -1:
+            M = cv2.moments(contours[idx])
+            try:
+                x = int(M['m10'] / M['m00'])
+                y = int(M['m01'] / M['m00'])
+            except:
+                pass
+        
+        return x, y
+
+    def callback(self, msg):
+        img = self.jpeg.decode(msg.data)
+
+        if self.width == None:
+            self.width = img.shape[1]
+        
+        # Check for the red line for all the incoming images
+        red_crop = img[300:-1, 100:-100, :]
+        red_crop_hsv = cv2.cvtColor(red_crop, cv2.COLOR_BGR2HSV)
+        lower_mask = cv2.inRange(red_crop_hsv, STOP_MASK[0][0], STOP_MASK[0][1])
+        upper_mask = cv2.inRange(red_crop_hsv, STOP_MASK[1][0], STOP_MASK[1][1])
+        full_mask = lower_mask + upper_mask
+        
+        # Get contour and check if contour is "close enough" to car itself
+        red_contours, _ = cv2.findContours(mask,
+                                           cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_NONE)
+        _, mx_idx = self.get_max_contour(red_contours)
+        rx, ry = self.get_contour_center(red_contours, mx_idx)
+        if not self.is_stop and not self.turning and \
+           mx_idx != -1 and rx != -1 and ry != -1 and \
+           ry >= self.lower_thresh:
+            # Indicate the stop when car is DRIVING (i.e. not at the stop state
+            # or passing through the intersections).
             self.is_stop = True
             self.t_start = rospy.get_rostime().secs
 
-    def callback(self, msg):
-        ### States:
-        # Drive --> Stop at the intersection --> 
-        # Lights the appropriate LED --> move right/left for a bit
-        # ---> Drive (repeat)
-        # Drive: consists of two possible states
-        #   1. Follow the robot 
-        #   2. Follow the lane
         if not self.in_front:
-            # If bot is not in front, do lane following
-            img = self.jpeg.decode(msg.data)
+            # Preprocess image and extract contours for yellow line on road
             crop = img[300:-1, :, :]
-            crop_width = crop.shape[1]
+            # crop_width = crop.shape[1]
             hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
             mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
             crop = cv2.bitwise_and(crop, crop, mask=mask)
@@ -160,27 +204,13 @@ class LaneAndRobotFollowNode(DTROS):
                                                 cv2.CHAIN_APPROX_NONE)
 
             # Search for lane in front
-            max_area = 20
-            max_idx = -1
-            for i in range(len(contours)):
-                area = cv2.contourArea(contours[i])
-                if area > max_area:
-                    max_idx = i
-                    max_area = area
-
-            if max_idx != -1:
-                M = cv2.moments(contours[max_idx])
-                try:
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
-                    self.proportional = cx - int(crop_width / 2) + self.offset
-                    if DEBUG:
-                        cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
-                        cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-                except:
-                    pass
-            else:
+            _, max_idx = self.get_max_contour(contours)
+            cx, cy = self.get_contourr_center(contours, max_idx)
+            
+            if max_idx == -1:
                 self.proportional = None
+            elif cx != -1 and cy != -1:
+                self.proportional = cx - int(self.width / 2) + self.offset
 
             if DEBUG:
                 rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
@@ -188,7 +218,7 @@ class LaneAndRobotFollowNode(DTROS):
         
         else:
             # Follow the robot in front
-            self.proportional = self.center[0] - int(crop_width / 2)
+            self.proportional = self.center_x - int(img.shape[1] / 2)
 
     def stop(self):
         """Stop the vehicle completely."""
@@ -211,13 +241,15 @@ class LaneAndRobotFollowNode(DTROS):
     
     def drive(self):
         ### Handle all the variables/flags which are independent of incoming messages 
+        # print("Stopping? : ", self.is_stop, rospy.get_rostime().secs - self.t_start)
+        # print("Turning? : ", self.turning, rospy.get_rostime().secs - self.t_turn_start)
         if self.is_stop and rospy.get_rostime().secs - self.t_start >= self.t_stop:
             # Move a bit when waiting duration is over
             self.is_stop = False
             self.turning = True
             self.t_turn_start = rospy.get_rostime().secs
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start >= self.t_turn:
-            # Switch from manual control to PID control
+            # Switch from manual control to PID control (TURN to DRIVE)
             self.turning = False
 
         if self.proportional is None:
@@ -232,6 +264,7 @@ class LaneAndRobotFollowNode(DTROS):
             self.last_time = rospy.get_time()
             D = d_error * self.D
 
+            # Assign PID control values as the default values
             self.twist.v = self.velocity * min(self.cur_dist_to_leader, 1)
             self.twist.omega = P + D
 
@@ -239,11 +272,22 @@ class LaneAndRobotFollowNode(DTROS):
                 self.loginfo(self.proportional, P, D, self.twist.omega, self.twist.v)
         
         # Handle special cases
-        if (self.in_front and self.cur_dist_to_leader < self.dist_thresh + self.eps) or (self.is_stop and (rospy.get_rostime().secs - self.t_start < self.t_stop)):
+        if (self.in_front and self.cur_dist_to_leader < self.dist_thresh + self.eps) or \
+           (self.is_stop and rospy.get_rostime().secs - self.t_start < self.t_stop):
+            # Track the center of leader robot to decide the direction to turn
             self.stop()
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            self.straight()     # TODO: Allow either turn or straight based on the situation
-
+            if self.in_front or self.center_x == -1:
+                # If one detect leader robot in front, or never detected the robot,
+                # circle around the Duckietown
+                self.straight()
+            elif not self.in_front:
+                if self.center_x < self.width // 2 or self.at_id in self.t_intersection_left:
+                    self.turn(False)
+                else:
+                    self.turn(True)
+            
+        # Publish the resultant control values
         self.vel_pub.publish(self.twist)
 
     def hook(self):
@@ -253,7 +297,6 @@ class LaneAndRobotFollowNode(DTROS):
         self.vel_pub.publish(self.twist)
         for i in range(8):
             self.vel_pub.publish(self.twist)
-
 
 if __name__ == "__main__":
     node = LaneAndRobotFollowNode("lane_robot_follow_node")
