@@ -94,6 +94,7 @@ class LaneAndRobotFollowNode(DTROS):
 
         # PID related terms
         self.P = 0.037
+        self.P_Follow = 0.01
         self.D = -0.004
         self.last_error = 0
         self.last_time = rospy.get_time()
@@ -114,7 +115,7 @@ class LaneAndRobotFollowNode(DTROS):
         self.at_id = -1
 
         # Timer for stopping at the intersection
-        self.t_stop = 4     # stop for this amount of seconds at intersections
+        self.t_stop = 1     # stop for this amount of seconds at intersections
         self.t_start = 0
 
         # Timer for turning/going straight at the intersection
@@ -127,7 +128,6 @@ class LaneAndRobotFollowNode(DTROS):
 
     def cb_distance(self, msg):
         self.cur_dist_to_leader = msg.data
-        print(self.cur_dist_to_leader)
 
     def cb_corners(self, msg):
         if len(msg.corners) > 0:
@@ -140,7 +140,8 @@ class LaneAndRobotFollowNode(DTROS):
         self.in_front = msg.data
 
     def cb_apriltag_id(self, msg):
-        self.at_id = msg.data
+        if msg.data != 0:
+            self.at_id = msg.data
     
     def get_max_contour(self, contours):
         max_area = 20
@@ -183,7 +184,7 @@ class LaneAndRobotFollowNode(DTROS):
 
         _, mx_idx = self.get_max_contour(red_contours)
         rx, ry = self.get_contour_center(red_contours, mx_idx)
-        # print(rx, ry)
+
         if not self.is_stop and not self.turning and \
            mx_idx != -1 and rx != -1 and ry != -1 and \
            ry >= self.lower_thresh:
@@ -194,6 +195,8 @@ class LaneAndRobotFollowNode(DTROS):
             self.t_start = rospy.get_rostime().secs
 
         if not self.in_front:
+            print("Following node.")
+            print('-' * 20)
             # Preprocess image and extract contours for yellow line on road
             crop = img[300:-1, :, :]
             # crop_width = crop.shape[1]
@@ -218,6 +221,8 @@ class LaneAndRobotFollowNode(DTROS):
                 self.pub.publish(rect_img_msg)
         
         else:
+            print("Detected.")
+            print('-' * 20)
             # Follow the robot in front
             self.proportional = self.center_x - int(self.width / 2)
 
@@ -234,7 +239,7 @@ class LaneAndRobotFollowNode(DTROS):
     def turn(self, right=True):
         """Turn the car at the intersection."""
         if right:
-            self.twist.v = self.velocity + 0.5
+            self.twist.v = self.velocity
             self.twist.omega = -3.3
         else:
             self.twist.v = self.velocity
@@ -257,7 +262,10 @@ class LaneAndRobotFollowNode(DTROS):
             self.twist.omega = 0
         else:
             # P Term
-            P = -self.proportional * self.P
+            if self.in_front:
+                P = -self.proportional * self.P_Follow
+            else:
+                P = -self.proportional * self.P
 
             # D Term
             d_error = (self.proportional - self.last_error) / (rospy.get_time() - self.last_time)
@@ -282,7 +290,8 @@ class LaneAndRobotFollowNode(DTROS):
                 print("Straight")
                 # If one detect leader robot in front, go straight
                 self.straight()
-            elif not self.in_front:
+            else:
+                print(self.at_id)
                 if self.center_x > self.width / 2 or (self.at_id in self.t_intersection_right + self.stop_sign_ids):
                     print("Turn right")
                     self.turn(True)
