@@ -3,6 +3,8 @@ import yaml
 
 import rospy
 from duckietown.dtros import DTROS, NodeType
+from duckietown_msgs.srv import SetCustomLEDPattern
+from duckietown_msgs.msg import LEDPattern
 from std_msgs.msg import Int32 
 from sensor_msgs.msg import CompressedImage
 
@@ -64,6 +66,10 @@ class AprilTagDetectionNode(DTROS):
         self.camera_mat, self.distort_coef, self.proj_mat, self.hom_mat = \
             parse_calib_params(self._int_path, self._ext_path)
         
+        # Service
+        rospy.wait_for_service(f"/{self._veh}/led_emitter_node/set_custom_pattern")
+        self.service = rospy.ServiceProxy(f"/{self._veh}/led_emitter_node/set_custom_pattern", SetCustomLEDPattern)
+        
         # Subscriber
         self.sub_cam = rospy.Subscriber(
             f"/{self._veh}/camera_node/image/compressed",
@@ -123,6 +129,10 @@ class AprilTagDetectionNode(DTROS):
                         # print(ptA, ptB, ptC)
                         mx_area = area
                         mx_tag_id = tag.tag_id
+                        self.change_color(self.tags[mx_tag_id] if mx_tag_id in self.tags else "none")
+            
+            if not tags:
+                self.change_color("none")
 
             # Publish maximum area and tag ids
             msg = Int32()
@@ -131,6 +141,30 @@ class AprilTagDetectionNode(DTROS):
 
             self.cnt = 0
         self.cnt += 1
+    
+    def change_color(self, tag):
+        '''
+        3: right
+        4: left
+        '''
+        msg = LEDPattern()
+        if tag == "none":
+            msg.frequency = 2
+            if tag == "left":
+                msg.color_list = ["white", "white", "white", "white", "red"]
+                msg.frequency_mask = [0, 0, 0, 0, 1]
+            elif tag == "right":
+                msg.color_list = ["white", "white", "white", "red", "white"]
+                msg.frequency_mask = [0, 0, 0, 1, 0]
+        else:
+            msg.frequency = 0
+            msg.color_list = ["white", "white", "white", "white", "white"]
+            msg.frequency_mask = [0, 0, 0, 0, 0]
+        msg.color_mask = [1, 1, 1, 1, 1]
+        self.service(msg)
+        
+
+
         
 if __name__ == "__main__":
     apriltag_ar = AprilTagDetectionNode()
