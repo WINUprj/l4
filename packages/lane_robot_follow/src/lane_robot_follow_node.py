@@ -83,7 +83,7 @@ class LaneAndRobotFollowNode(DTROS):
             self.offset = -220
         else:
             self.offset = 220
-        self.velocity = 0.35
+        self.velocity = 0.3
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
         
         self.margin = 30
@@ -97,7 +97,7 @@ class LaneAndRobotFollowNode(DTROS):
         self.last_time = rospy.get_time()
 
         # Thresholds
-        self.dist_thresh = 0.45
+        self.dist_thresh = 0.5
         self.eps = 0.003
         
         # Variables to track on
