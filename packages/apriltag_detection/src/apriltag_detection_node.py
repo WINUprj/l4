@@ -49,6 +49,8 @@ class AprilTagDetectionNode(DTROS):
             node_type=NodeType.GENERIC
         )
 
+        self.tags = {133 : "right", 153: "left", 58: "right", 62: "left"}
+
         # Get arguments from a launch file
         self._veh = rospy.get_param("~veh")
         self._int_path = rospy.get_param("~int_file")

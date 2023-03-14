@@ -98,8 +98,8 @@ class LaneAndRobotFollowNode(DTROS):
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
 
         # PID related terms
-        self.P = 0.037
-        self.D = -0.004
+        self.P = 0.04
+        self.D = -0.005
         self.last_error = 0
         self.last_time = rospy.get_time()
 
@@ -175,9 +175,12 @@ class LaneAndRobotFollowNode(DTROS):
     3: rear right
     4: rear left
     '''
-    def turn_indicator(self, direction):
+    def turn_indicator(self, direction, color):
         indicator = LEDPattern()
-        indicator.color_list = [direction] * 5
+        # Flash the led 5 times when apriltag is detected and you want to turn
+        if direction == 'left':
+            indicator.color_list = ["white", "white", "white", "white", color]
+
 
 
     def callback(self, msg):
