@@ -102,9 +102,9 @@ class LaneAndRobotFollowNode(DTROS):
         
         # Variables to track on
         self.in_front = False       # indicates whether leader bot is in front
+        self.in_front_before_stop = False
         self.is_stop = False
         self.center_x = -1 
-        self.center_cache = []
         self.min_x = []
         self.max_x = []
 
@@ -189,6 +189,7 @@ class LaneAndRobotFollowNode(DTROS):
             self.min_x = []
             self.min_y = []
             self.t_start = rospy.get_rostime().secs
+            self.in_front_before_stop = self.in_front
 
         if not self.in_front:
             # Preprocess image and extract contours for yellow line on road
@@ -216,7 +217,6 @@ class LaneAndRobotFollowNode(DTROS):
         
         else:
             # Follow the robot in front
-            self.center_cache.append(self.center_x)
             self.proportional = self.center_x - int(self.width / 2)
 
     def stop(self):
@@ -248,7 +248,6 @@ class LaneAndRobotFollowNode(DTROS):
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start >= self.t_turn:
             # Switch from manual control to PID control (TURN to DRIVE)
             self.turning = False
-            self.center_cache = []
 
         if self.proportional is None:
             self.twist.omega = 0
@@ -282,15 +281,19 @@ class LaneAndRobotFollowNode(DTROS):
             self.stop()
 
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            mn_diff = self.min_x[-1] - self.min_x[0]
-            mx_diff = self.max_x[0] - self.max_x[-1]
-
-            if mn_diff < 0 or mx_diff >= self.margin:
-                self.turn(False)
-            elif mx_diff < 0 or mn_diff >= self.margin:
-                self.turn(True)
-            else:
+            
+            if not self.in_front_before_stop:
                 self.straight()
+            else:
+                mn_diff = self.min_x[-1] - self.min_x[0]
+                mx_diff = self.max_x[0] - self.max_x[-1]
+
+                if mn_diff < 0 or mx_diff >= self.margin:
+                    self.turn(False)
+                elif mx_diff < 0 or mn_diff >= self.margin:
+                    self.turn(True)
+                else:
+                    self.straight()
             
         # Publish the resultant control values
         self.vel_pub.publish(self.twist)
