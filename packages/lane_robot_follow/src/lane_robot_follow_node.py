@@ -3,7 +3,8 @@ import rospy
 
 from duckietown.dtros import DTROS, NodeType
 from std_msgs.msg import String, Float32, Int32
-from duckietown_msgs.msg import BoolStamped, VehicleCorners
+from duckietown_msgs.msg import BoolStamped, VehicleCorners, LEDPattern
+from duckietown_msgs.srv import SetCustomLEDPattern
 from sensor_msgs.msg import CompressedImage
 from turbojpeg import TurboJPEG
 import cv2
@@ -27,6 +28,10 @@ class LaneAndRobotFollowNode(DTROS):
         
         self.cur_dist_to_leader = 1.5
 
+        ### Service
+        rospy.wait_for_service(f"/{self._veh}/led_emitter_node/set_custom_pattern")
+        self.service = rospy.ServiceProxy(f"/{self._veh}/led_emitter_node/set_custom_pattern", SetCustomLEDPattern)
+        
         ### Subscribers
         # Camera images
         self.sub = rospy.Subscriber(
@@ -297,6 +302,28 @@ class LaneAndRobotFollowNode(DTROS):
             
         # Publish the resultant control values
         self.vel_pub.publish(self.twist)
+
+    def change_color(self, right=None):
+        '''
+        true: right
+        false: left
+
+        '''
+        msg = LEDPattern()
+        if right != None:
+            msg.frequency = 2
+            if not right:
+                msg.color_list = ["white", "white", "white", "white", "red"]
+                msg.frequency_mask = [0, 0, 0, 0, 1]
+            elif right:
+                msg.color_list = ["white", "white", "white", "red", "white"]
+                msg.frequency_mask = [0, 0, 0, 1, 0]
+        else:
+            msg.frequency = 0
+            msg.color_list = ["white", "white", "white", "white", "white"]
+            msg.frequency_mask = [0, 0, 0, 0, 0]
+        msg.color_mask = [1, 1, 1, 1, 1]
+        self.service(msg)
 
     def hook(self):
         print("SHUTTING DOWN")
