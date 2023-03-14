@@ -3,17 +3,18 @@ import rospy
 
 from duckietown.dtros import DTROS, NodeType
 from std_msgs.msg import String, Float32, Int32
-from duckietown_msgs.msg import BoolStamped, VehicleCorners, LEDPattern
-from duckietown_msgs.srv import SetCustomLEDPattern
+from duckietown_msgs.msg import BoolStamped, VehicleCorners
 from sensor_msgs.msg import CompressedImage
 from turbojpeg import TurboJPEG
 import cv2
+from cv_bridge import CvBridge
 import numpy as np
 from duckietown_msgs.msg import Twist2DStamped
 
 ROAD_MASK = [(20, 60, 0), (50, 255, 255)]
 # Mask resource: https://cvexplained.wordpress.com/2020/04/28/color-detection-hsv/#:~:text=The%20HSV%20values%20for%20true,10%20and%20160%20to%20180.
 STOP_MASK = [(0, 100, 20), (10, 255, 255)]
+TAIL_MASK = [(69, 130, 0), (179, 255, 99)]
 DEBUG = False
 ENGLISH = False
 
@@ -28,10 +29,6 @@ class LaneAndRobotFollowNode(DTROS):
         
         self.cur_dist_to_leader = 1.5
 
-        ### Service
-        rospy.wait_for_service(f"/{self._veh}/led_emitter_node/set_custom_pattern")
-        self.service = rospy.ServiceProxy(f"/{self._veh}/led_emitter_node/set_custom_pattern", SetCustomLEDPattern)
-        
         ### Subscribers
         # Camera images
         self.sub = rospy.Subscriber(
@@ -110,8 +107,7 @@ class LaneAndRobotFollowNode(DTROS):
         self.in_front_before_stop = False
         self.is_stop = False
         self.center_x = -1 
-        self.min_x = []
-        self.max_x = []
+        self.tail_center_x = -1
 
         # Timer for stopping at the intersection
         self.t_stop = 5     # stop for this amount of seconds at intersections
@@ -135,9 +131,6 @@ class LaneAndRobotFollowNode(DTROS):
             self.center_x = int(
                 np.mean(xs)
             )
-            if self.is_stop:
-                self.min_x.append(min(xs))
-                self.max_x.append(max(xs))
 
     def cb_detect(self, msg):
         self.in_front = msg.data
@@ -191,10 +184,18 @@ class LaneAndRobotFollowNode(DTROS):
             # Indicate the stop when car is DRIVING (i.e. not at the stop state
             # or passing through the intersections).
             self.is_stop = True
-            self.min_x = []
-            self.min_y = []
             self.t_start = rospy.get_rostime().secs
-            self.in_front_before_stop = self.in_front
+
+        if self.is_stop:
+            full_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            msk = cv2.inRange(full_hsv, TAIL_MASK[0], TAIL_MASK[1])
+            
+            blue_cnt, _ = cv2.findContours(msk,
+                                            cv2.RETR_EXTERNAL,
+                                            cv2.CHAIN_APPROX_NONE)
+
+            _, mx_idx = self.get_max_contour(blue_cnt)
+            self.tail_center_x, _ = self.get_contour_center(blue_cnt, mx_idx)
 
         if not self.in_front:
             # Preprocess image and extract contours for yellow line on road
@@ -231,15 +232,18 @@ class LaneAndRobotFollowNode(DTROS):
     
     def straight(self):
         """Move vehicle in forward direction."""
+        print("Straight")
         self.twist.v = self.velocity
         self.twist.omega = 0
 
     def turn(self, right=True):
         """Turn the car at the intersection."""
         if right:
+            print("Right")
             self.twist.v = self.velocity
             self.twist.omega = -3.3
         else:
+            print("Left")
             self.twist.v = self.velocity
             self.twist.omega = 3.5
     
@@ -253,6 +257,7 @@ class LaneAndRobotFollowNode(DTROS):
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start >= self.t_turn:
             # Switch from manual control to PID control (TURN to DRIVE)
             self.turning = False
+            self.tail_center_x = -1
 
         if self.proportional is None:
             self.twist.omega = 0
@@ -286,44 +291,15 @@ class LaneAndRobotFollowNode(DTROS):
             self.stop()
 
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            
-            if not self.in_front_before_stop:
-                self.straight()
+            if self.tail_center_x < self.width // 4:
+                self.turn(False)
+            elif self.tail_center_x >= (self.width * 3) // 4:
+                self.turn(True)
             else:
-                mn_diff = self.min_x[-1] - self.min_x[0]
-                mx_diff = self.max_x[0] - self.max_x[-1]
-
-                if mn_diff < 0 or mx_diff >= self.margin:
-                    self.turn(False)
-                elif mx_diff < 0 or mn_diff >= self.margin:
-                    self.turn(True)
-                else:
-                    self.straight()
+                self.straight()
             
         # Publish the resultant control values
         self.vel_pub.publish(self.twist)
-
-    def change_color(self, right=None):
-        '''
-        true: right
-        false: left
-
-        '''
-        msg = LEDPattern()
-        if right != None:
-            msg.frequency = 2
-            if not right:
-                msg.color_list = ["white", "white", "white", "white", "red"]
-                msg.frequency_mask = [0, 0, 0, 0, 1]
-            elif right:
-                msg.color_list = ["white", "white", "white", "red", "white"]
-                msg.frequency_mask = [0, 0, 0, 1, 0]
-        else:
-            msg.frequency = 0
-            msg.color_list = ["white", "white", "white", "white", "white"]
-            msg.frequency_mask = [0, 0, 0, 0, 0]
-        msg.color_mask = [1, 1, 1, 1, 1]
-        self.service(msg)
 
     def hook(self):
         print("SHUTTING DOWN")
