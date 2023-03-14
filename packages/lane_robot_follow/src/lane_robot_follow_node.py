@@ -54,12 +54,6 @@ class LaneAndRobotFollowNode(DTROS):
             BoolStamped,
             self.cb_detect
         )
-        # Apriltag information
-        self.sub_detect = rospy.Subscriber(
-            f"/{self.veh}/apriltag_detection/id",
-            Int32,
-            self.cb_apriltag_id
-        )
 
         ### Publishers
         # Publish mask image for debug
@@ -91,11 +85,14 @@ class LaneAndRobotFollowNode(DTROS):
             self.offset = 220
         self.velocity = 0.35
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
+        
+        self.margin = 30
 
         # PID related terms
         self.P = 0.037
-        self.P_Follow = 0.01
+        self.P_Follow = 0.005
         self.D = -0.004
+        self.D_Follow = -0.0005
         self.last_error = 0
         self.last_time = rospy.get_time()
 
@@ -107,15 +104,12 @@ class LaneAndRobotFollowNode(DTROS):
         self.in_front = False       # indicates whether leader bot is in front
         self.is_stop = False
         self.center_x = -1 
-
-        # Apriltag-related data
-        self.t_intersection_right = [58, 133]
-        self.t_intersection_left = [153, 62]
-        self.stop_sign_ids = [162, 169]
-        self.at_id = -1
+        self.center_cache = []
+        self.min_x = []
+        self.max_x = []
 
         # Timer for stopping at the intersection
-        self.t_stop = 1     # stop for this amount of seconds at intersections
+        self.t_stop = 5     # stop for this amount of seconds at intersections
         self.t_start = 0
 
         # Timer for turning/going straight at the intersection
@@ -132,16 +126,16 @@ class LaneAndRobotFollowNode(DTROS):
     def cb_corners(self, msg):
         if len(msg.corners) > 0:
             # Get x value where middle of leading bot exists
+            xs = [msg.corners[i].x for i in range(len(msg.corners))]
             self.center_x = int(
-                np.mean([msg.corners[i].x for i in range(len(msg.corners))])
+                np.mean(xs)
             )
+            if self.is_stop:
+                self.min_x.append(min(xs))
+                self.max_x.append(max(xs))
 
     def cb_detect(self, msg):
         self.in_front = msg.data
-
-    def cb_apriltag_id(self, msg):
-        if msg.data != 0:
-            self.at_id = msg.data
     
     def get_max_contour(self, contours):
         max_area = 20
@@ -192,11 +186,11 @@ class LaneAndRobotFollowNode(DTROS):
             # Indicate the stop when car is DRIVING (i.e. not at the stop state
             # or passing through the intersections).
             self.is_stop = True
+            self.min_x = []
+            self.min_y = []
             self.t_start = rospy.get_rostime().secs
 
         if not self.in_front:
-            print("Following node.")
-            print('-' * 20)
             # Preprocess image and extract contours for yellow line on road
             crop = img[300:-1, :, :]
             # crop_width = crop.shape[1]
@@ -221,9 +215,8 @@ class LaneAndRobotFollowNode(DTROS):
                 self.pub.publish(rect_img_msg)
         
         else:
-            print("Detected.")
-            print('-' * 20)
             # Follow the robot in front
+            self.center_cache.append(self.center_x)
             self.proportional = self.center_x - int(self.width / 2)
 
     def stop(self):
@@ -247,8 +240,6 @@ class LaneAndRobotFollowNode(DTROS):
     
     def drive(self):
         ### Handle all the variables/flags which are independent of incoming messages 
-        # print("Stopping? : ", self.is_stop, rospy.get_rostime().secs - self.t_start)
-        # print("Turning? : ", self.turning, rospy.get_rostime().secs - self.t_turn_start)
         if self.is_stop and rospy.get_rostime().secs - self.t_start >= self.t_stop:
             # Move a bit when waiting duration is over
             self.is_stop = False
@@ -257,13 +248,14 @@ class LaneAndRobotFollowNode(DTROS):
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start >= self.t_turn:
             # Switch from manual control to PID control (TURN to DRIVE)
             self.turning = False
+            self.center_cache = []
 
         if self.proportional is None:
             self.twist.omega = 0
         else:
             # P Term
             if self.in_front:
-                P = -self.proportional * self.P_Follow
+                P = self.proportional * self.P_Follow
             else:
                 P = -self.proportional * self.P
 
@@ -271,10 +263,13 @@ class LaneAndRobotFollowNode(DTROS):
             d_error = (self.proportional - self.last_error) / (rospy.get_time() - self.last_time)
             self.last_error = self.proportional
             self.last_time = rospy.get_time()
-            D = d_error * self.D
+            if self.in_front:
+                D = -d_error * self.D_Follow
+            else:
+                D = d_error * self.D
 
             # Assign PID control values as the default values
-            self.twist.v = self.velocity * min(self.cur_dist_to_leader, 1)
+            self.twist.v = self.velocity
             self.twist.omega = P + D
 
             if DEBUG:
@@ -285,19 +280,17 @@ class LaneAndRobotFollowNode(DTROS):
            (self.is_stop and rospy.get_rostime().secs - self.t_start < self.t_stop):
             # Track the center of leader robot to decide the direction to turn
             self.stop()
+
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            if self.in_front:
-                print("Straight")
-                # If one detect leader robot in front, go straight
-                self.straight()
+            mn_diff = self.min_x[-1] - self.min_x[0]
+            mx_diff = self.max_x[0] - self.max_x[-1]
+
+            if mn_diff < 0 or mx_diff >= self.margin:
+                self.turn(False)
+            elif mx_diff < 0 or mn_diff >= self.margin:
+                self.turn(True)
             else:
-                print(self.at_id)
-                if self.center_x > self.width / 2 or (self.at_id in self.t_intersection_right + self.stop_sign_ids):
-                    print("Turn right")
-                    self.turn(True)
-                else:
-                    print("Turn left")
-                    self.turn(False)
+                self.straight()
             
         # Publish the resultant control values
         self.vel_pub.publish(self.twist)

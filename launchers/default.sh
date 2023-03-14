@@ -16,7 +16,6 @@ VEH="csc22918"      # Change this per bot
 # launching app
 dt-exec roslaunch led_emitter led_emitter_node.launch veh:=$VEH
 dt-exec roslaunch duckiebot_detection duckiebot_detection_node.launch veh:=$VEH
-dt-exec roslaunch apriltag_detection apriltag_detection_node.launch veh:=$VEH
 dt-exec roslaunch lane_robot_follow lane_robot_follow_node.launch veh:=$VEH
 
 # ----------------------------------------------------------------------------
