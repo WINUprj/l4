@@ -88,7 +88,7 @@ class AprilTagDetectionNode(DTROS):
                              self.camera_mat)
 
     def cb_cam(self, msg):
-        if self.cnt % 7 == 0: 
+        if self.cnt % 6 == 0: 
             # Reconstruct byte sequence to image
             img = np.frombuffer(msg.data, np.uint8) 
             img = cv2.imdecode(img, cv2.IMREAD_COLOR)
