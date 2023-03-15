@@ -88,51 +88,52 @@ class LaneAndRobotFollowNode(DTROS):
         self.velocity = 0.3
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
         
-        self.margin = 30
-
         # PID related terms
-        self.P = 0.037
-        self.P_Follow = 0.0037
-        self.D = -0.004
-        self.D_Follow = -0.0004
+        self.P = 0.037              # P value for lane following
+        self.P_Follow = 0.001       # P value for following 
+        self.D = -0.004             # D value for lane following
+        self.D_Follow = -0.0005     # D value for robot following
         self.last_error = 0
         self.last_time = rospy.get_time()
 
         # Thresholds
-        self.dist_thresh = 0.45
+        self.dist_thresh = 0.45     # Safe driving distance in meters
         self.eps = 0.003
         
-        # Variables to track on
-        self.in_front = False       # indicates whether leader bot is in front
-        self.in_front_before_stop = False
-        self.is_stop = False
-        self.center_x = -1 
-        self.tail_center_x = -1
+        # Variables to track on (i.e. flags)
+        self.in_front = False      # Indicates whether leader bot is in front
+        self.is_stop = False       # Indicates whether robot is stopping or not 
+        self.center_x = -1         # x value of center dot on a dot sticker
+        self.tail_center_x = -1    # x value of center of blue contour (i.e. tail of robot)
 
         # Timer for stopping at the intersection
         self.t_stop = 3     # stop for this amount of seconds at intersections
-        self.t_start = 0
+        self.t_start = 0    # Time that started to stop
 
         # Timer for turning/going straight at the intersection
-        self.turning = False 
-        self.t_turn = 2
-        self.t_turn_start = 0
+        self.turning = False       # Indicates whether robot is turning or not
+        self.t_turn = 2            # Duration of turn
+        self.t_turn_start = 0      # Time when turn starts
 
         # Shutdown hook
         rospy.on_shutdown(self.hook)
 
     def cb_distance(self, msg):
+        """Update the distance from robot to leader"""
         self.cur_dist_to_leader = msg.data
 
     def cb_corners(self, msg):
+        """Update the self.center_x value from detection results"""
         if len(msg.corners) == 21:
             # Get x value where middle of leading bot exists
             self.center_x = msg.corners[10].x
 
     def cb_detect(self, msg):
+        """Update whether robot detects the tail sticker"""
         self.in_front = msg.data
     
     def get_max_contour(self, contours):
+        """Get contour id with maximum area"""
         max_area = 20
         max_idx = -1
         for i in range(len(contours)):
@@ -144,6 +145,7 @@ class LaneAndRobotFollowNode(DTROS):
         return max_area, max_idx
 
     def get_contour_center(self, contours, idx):
+        """Get the center of target contour."""
         x, y = -1, -1
         if idx != -1:
             M = cv2.moments(contours[idx])
@@ -156,6 +158,8 @@ class LaneAndRobotFollowNode(DTROS):
         return x, y
 
     def callback(self, msg):
+        """Callback for the image message. Retrieve necessary information which
+        could be collected from image, and update flag values as needed."""
         img = self.jpeg.decode(msg.data)
 
         if self.width == None:
@@ -219,9 +223,8 @@ class LaneAndRobotFollowNode(DTROS):
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub.publish(rect_img_msg)
         
-        # else:
-        #     self.proportional = self.center_x - int(self.width / 2)
-        #     print(self.proportional)
+        else:
+            self.proportional = self.center_x - int(self.width / 2)
 
     def stop(self):
         """Stop the vehicle completely."""
@@ -246,7 +249,8 @@ class LaneAndRobotFollowNode(DTROS):
             self.twist.omega = 2.5
     
     def drive(self):
-        ### Handle all the variables/flags which are independent of incoming messages 
+        """Handle all the variables which are independent of incoming messages, and 
+        publish the control message."""
         if self.is_stop and rospy.get_rostime().secs - self.t_start >= self.t_stop:
             # Move a bit when waiting duration is over
             self.is_stop = False
@@ -261,19 +265,19 @@ class LaneAndRobotFollowNode(DTROS):
             self.twist.omega = 0
         else:
             # P Term
-            # if self.in_front:
-            #     P = self.proportional * self.P_Follow
-            # else:
-            P = -self.proportional * self.P
+            if self.in_front:
+                P = self.proportional * self.P_Follow
+            else:
+                P = -self.proportional * self.P
 
             # D Term
             d_error = (self.proportional - self.last_error) / (rospy.get_time() - self.last_time)
             self.last_error = self.proportional
             self.last_time = rospy.get_time()
-            # if self.in_front:
-            #     D = -d_error * self.D_Follow
-            # else:
-            D = d_error * self.D
+            if self.in_front:
+                D = -d_error * self.D_Follow
+            else:
+                D = d_error * self.D
 
             # Assign PID control values as the default values
             self.twist.v = self.velocity
@@ -289,7 +293,7 @@ class LaneAndRobotFollowNode(DTROS):
             self.stop()
 
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
-            print(self.tail_center_x)
+            # Decide which way to move at the intersection
             if self.tail_center_x < self.width // 4:
                 self.turn(False)
             elif self.tail_center_x >= (self.width * 2) // 3:
