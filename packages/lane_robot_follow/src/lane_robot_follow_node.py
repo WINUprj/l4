@@ -92,14 +92,14 @@ class LaneAndRobotFollowNode(DTROS):
 
         # PID related terms
         self.P = 0.037
-        self.P_Follow = 0.005
+        self.P_Follow = 0.0037
         self.D = -0.004
-        self.D_Follow = -0.0005
+        self.D_Follow = -0.0004
         self.last_error = 0
         self.last_time = rospy.get_time()
 
         # Thresholds
-        self.dist_thresh = 0.5
+        self.dist_thresh = 0.45
         self.eps = 0.003
         
         # Variables to track on
@@ -110,7 +110,7 @@ class LaneAndRobotFollowNode(DTROS):
         self.tail_center_x = -1
 
         # Timer for stopping at the intersection
-        self.t_stop = 5     # stop for this amount of seconds at intersections
+        self.t_stop = 3     # stop for this amount of seconds at intersections
         self.t_start = 0
 
         # Timer for turning/going straight at the intersection
@@ -125,12 +125,9 @@ class LaneAndRobotFollowNode(DTROS):
         self.cur_dist_to_leader = msg.data
 
     def cb_corners(self, msg):
-        if len(msg.corners) > 0:
+        if len(msg.corners) == 21:
             # Get x value where middle of leading bot exists
-            xs = [msg.corners[i].x for i in range(len(msg.corners))]
-            self.center_x = int(
-                np.mean(xs)
-            )
+            self.center_x = msg.corners[10].x
 
     def cb_detect(self, msg):
         self.in_front = msg.data
@@ -180,13 +177,12 @@ class LaneAndRobotFollowNode(DTROS):
         if not self.is_stop and not self.turning and \
            mx_idx != -1 and rx != -1 and ry != -1 and \
            ry >= self.lower_thresh:
-            print("Stopping!")
             # Indicate the stop when car is DRIVING (i.e. not at the stop state
             # or passing through the intersections).
             self.is_stop = True
             self.t_start = rospy.get_rostime().secs
 
-        if self.is_stop:
+        if self.is_stop or self.in_front:
             full_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
             msk = cv2.inRange(full_hsv, TAIL_MASK[0], TAIL_MASK[1])
             
@@ -195,35 +191,37 @@ class LaneAndRobotFollowNode(DTROS):
                                             cv2.CHAIN_APPROX_NONE)
 
             _, mx_idx = self.get_max_contour(blue_cnt)
-            self.tail_center_x, _ = self.get_contour_center(blue_cnt, mx_idx)
+            x, _ = self.get_contour_center(blue_cnt, mx_idx)
+            if x != -1:
+                self.tail_center_x = x
 
-        if not self.in_front:
+        # if not self.in_front:
             # Preprocess image and extract contours for yellow line on road
-            crop = img[300:-1, :, :]
-            # crop_width = crop.shape[1]
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
-            crop = cv2.bitwise_and(crop, crop, mask=mask)
-            contours, hierarchy = cv2.findContours(mask,
-                                                cv2.RETR_EXTERNAL,
-                                                cv2.CHAIN_APPROX_NONE)
+        crop = img[300:-1, :, :]
+        # crop_width = crop.shape[1]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
+        crop = cv2.bitwise_and(crop, crop, mask=mask)
+        contours, hierarchy = cv2.findContours(mask,
+                                            cv2.RETR_EXTERNAL,
+                                            cv2.CHAIN_APPROX_NONE)
 
-            # Search for lane in front
-            _, max_idx = self.get_max_contour(contours)
-            cx, cy = self.get_contour_center(contours, max_idx)
+        # Search for lane in front
+        _, max_idx = self.get_max_contour(contours)
+        cx, cy = self.get_contour_center(contours, max_idx)
             
-            if max_idx == -1:
-                self.proportional = None
-            elif cx != -1 and cy != -1:
-                self.proportional = cx - int(self.width / 2) + self.offset
+        if max_idx == -1:
+            self.proportional = None
+        elif cx != -1 and cy != -1:
+            self.proportional = cx - int(self.width / 2) + self.offset
 
-            if DEBUG:
-                rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
-                self.pub.publish(rect_img_msg)
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub.publish(rect_img_msg)
         
-        else:
-            # Follow the robot in front
-            self.proportional = self.center_x - int(self.width / 2)
+        # else:
+        #     self.proportional = self.center_x - int(self.width / 2)
+        #     print(self.proportional)
 
     def stop(self):
         """Stop the vehicle completely."""
@@ -245,7 +243,7 @@ class LaneAndRobotFollowNode(DTROS):
         else:
             print("Left")
             self.twist.v = self.velocity
-            self.twist.omega = 3.5
+            self.twist.omega = 2.5
     
     def drive(self):
         ### Handle all the variables/flags which are independent of incoming messages 
@@ -263,19 +261,19 @@ class LaneAndRobotFollowNode(DTROS):
             self.twist.omega = 0
         else:
             # P Term
-            if self.in_front:
-                P = self.proportional * self.P_Follow
-            else:
-                P = -self.proportional * self.P
+            # if self.in_front:
+            #     P = self.proportional * self.P_Follow
+            # else:
+            P = -self.proportional * self.P
 
             # D Term
             d_error = (self.proportional - self.last_error) / (rospy.get_time() - self.last_time)
             self.last_error = self.proportional
             self.last_time = rospy.get_time()
-            if self.in_front:
-                D = -d_error * self.D_Follow
-            else:
-                D = d_error * self.D
+            # if self.in_front:
+            #     D = -d_error * self.D_Follow
+            # else:
+            D = d_error * self.D
 
             # Assign PID control values as the default values
             self.twist.v = self.velocity
@@ -291,9 +289,10 @@ class LaneAndRobotFollowNode(DTROS):
             self.stop()
 
         elif self.turning and rospy.get_rostime().secs - self.t_turn_start < self.t_turn_start:
+            print(self.tail_center_x)
             if self.tail_center_x < self.width // 4:
                 self.turn(False)
-            elif self.tail_center_x >= (self.width * 3) // 4:
+            elif self.tail_center_x >= (self.width * 2) // 3:
                 self.turn(True)
             else:
                 self.straight()
